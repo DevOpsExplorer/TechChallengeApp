@@ -1,0 +1,79 @@
+name: $(Date:yyyyMMdd).$(Rev:r)
+
+variables:
+  - name: imageName
+    value: 'samples/pipelines-golang-docker'
+
+trigger:
+  batch: true
+  branches:
+    include:
+    - master
+  paths:
+    exclude:
+     - doc
+     - ReadME.md
+
+stages:
+- stage: Build
+  variables:
+  - group: TechChallengeApp
+  jobs:
+  - job: 'BuildCode'
+    pool:
+      vmImage: 'windows-latest'
+    steps:
+    - task: qetza.replacetokens.replacetokens-task.replacetokens@3
+      displayName: 'Replace Secure Credential Value in TOML file'
+      inputs:
+          rootDirectory: '$(Build.Repository.LocalPath)'
+          targetFiles: '**/conf.toml'
+    - task: ShellScript@2
+      displayName: Build Solution
+      inputs:
+        scriptPath: '$(Build.Repository.LocalPath)/build.sh'
+        failOnStandardError: false
+    - task: CmdLine@2
+      displayName: Run DB Migration
+      inputs:
+        script: TechChallengeApp.exe updatedb
+        workingDirectory: '$(Build.Repository.LocalPath)/dist'
+        failOnStderr: false
+  - job: 'BuildDockerImage'
+    dependsOn: ['BuildCode']
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - task: qetza.replacetokens.replacetokens-task.replacetokens@3
+      displayName: 'Replace Secure Credential Value in TOML file'
+      inputs:
+          rootDirectory: '$(Build.Repository.LocalPath)'
+          targetFiles: '**/conf.toml'
+    - task: Docker@2
+      displayName: Build and Push an image to container registry
+      inputs:
+        command: buildAndPush
+        repository: $(imageName)
+        Dockerfile: '$(Build.Repository.LocalPath)/Dockerfile'
+        containerRegistry: acrServiceConnection
+        tags: latest
+    - publish: $(Build.Repository.LocalPath)/pipeline/manifest
+      artifact: drop
+
+- stage: Deploy
+  condition: and(succeeded(), notIn(variables['Build.Reason'], 'PullRequest'))
+  jobs:
+  - job: 'DeploytoAKS'
+    pool:
+      vmImage: 'ubuntu-latest'
+    steps:
+    - download: current
+      artifact: drop
+    - task: Kubernetes@1
+      displayName: kubectl apply
+      inputs:
+        connectionType: Kubernetes Service Connection
+        kubernetesServiceEndpoint: AKS-Service-Connection
+        command: apply
+        useConfigurationFile: true
+        configuration: '$(Pipeline.Workspace)/drop/aksmanifest.yaml'
