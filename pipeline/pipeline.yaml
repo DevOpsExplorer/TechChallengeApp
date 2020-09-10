@@ -61,6 +61,7 @@ stages:
       artifact: drop
 
 - stage: Deploy
+  condition: and(succeeded(), notIn(variables['Build.Reason'], 'PullRequest'))
   jobs:
   - job: 'DeploytoAKS'
     pool:
